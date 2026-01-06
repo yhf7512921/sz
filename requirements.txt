@@ -1,0 +1,16 @@
+langchain
+langchain-core
+langchain-community
+langchain-classic
+langchain-mcp-adapters
+langgraph
+fastapi
+pydantic
+requests
+httpx
+mysql-connector-python
+python-dotenv
+mcp
+uvicorn
+fastmcp
+langchain-openai
