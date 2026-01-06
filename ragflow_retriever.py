@@ -21,7 +21,7 @@ def _make_url(base: str, path: str) -> str:
     return urljoin(base.rstrip("/") + "/", path.lstrip("/"))
 
 class RagflowRetriever(BaseRetriever):
-    base_url: str   = os.getenv("RAGFLOW_API_BASE", "http://localhost:8000")
+    base_url: str   = os.getenv("RAGFLOW_API_BASE", "http://47.98.211.212:7071")
     api_key: str    = os.getenv("RAGFLOW_TOKEN", "")
     dataset_id: str = os.getenv("RAGFLOW_DATASET_ID", "")
     top_k: int      = 4
