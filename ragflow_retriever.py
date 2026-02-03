@@ -21,10 +21,10 @@ def _make_url(base: str, path: str) -> str:
     return urljoin(base.rstrip("/") + "/", path.lstrip("/"))
 
 class RagflowRetriever(BaseRetriever):
-    base_url: str   = os.getenv("RAGFLOW_API_BASE", "http://47.98.211.212:7071")
-    api_key: str    = os.getenv("RAGFLOW_TOKEN", "")
-    dataset_id: str = os.getenv("RAGFLOW_DATASET_ID", "")
-    top_k: int      = 4
+    base_url: str   = os.getenv("RAGFLOW_API_BASE", "http://localhost:8000")
+    api_key: str    = os.getenv("RAGFLOW_TOKEN", "ragflow-9ppdsyOXmGF7shW2VjKgovwnSpAg2Rq4628JgbQQoY0")
+    dataset_id: str = os.getenv("RAGFLOW_DATASET_ID", "04f1f520d4c811f0a5cd0242ac1b0006")
+    top_k: int      = 8
     verify_ssl: bool = True
     timeout: int    = 30
 
@@ -84,6 +84,10 @@ class RagflowRetriever(BaseRetriever):
         else:
             chunks = chunks_data if isinstance(chunks_data, list) else []
 
+        # 强制裁剪，避免服务端返回超过 top_k
+        if isinstance(chunks, list) and top_k is not None:
+            chunks = chunks[:top_k]
+
         docs = []
         for ch in chunks:
             if isinstance(ch, dict):
@@ -98,6 +102,7 @@ class RagflowRetriever(BaseRetriever):
                 meta["term_similarity"] = ch.get("term_similarity", 0)
                 
                 docs.append(Document(page_content=text, metadata=meta))
+        
         
         return docs
     

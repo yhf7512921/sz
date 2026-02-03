@@ -3,7 +3,9 @@ from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMe
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
+from report_tool import report_parallel_tool
 import operator
+
 
 
 # 定义消息对象
@@ -12,7 +14,7 @@ class AgentState(TypedDict):
     # 可以添加其他状态字段
 
 
-def trim_messages(messages: Sequence[BaseMessage], max_messages: int = 100) -> list:
+def trim_messages(messages: Sequence[BaseMessage], max_messages: int = 5) -> list:
     if len(messages) <= max_messages + 1:  # +1 for SystemMessage
         return list(messages)
     
@@ -41,73 +43,91 @@ def trim_messages(messages: Sequence[BaseMessage], max_messages: int = 100) -> l
     return system_msgs + other_msgs
 
 
-def create_langgraph_agent(llm, tools, system_prompt: str = "", memory=None , need_checkpoints=True, max_history_messages: int = 20):    
+def create_langgraph_agent(llm, tools,report_tool, system_prompt: str = "", report_prompt: str = "",report_final_prompt: str = "",memory=None , need_checkpoints=True, max_history_messages: int = 1000):    
     # 将工具绑定到 LLM
-    llm_with_tools = llm.bind_tools(tools)
+    tool_all = tools + report_tool
+    llm_with_tools = llm.bind_tools(tool_all)
     
-    # 定义节点函数
-    def call_model(state: AgentState):
-        """调用模型生成回复"""
+    # 定义节点函数，模型主函数
+    async def call_model(state: AgentState):
         messages = list(state["messages"])
-        
-        # 检查是否需要真正删除旧消息（而不只是裁剪）
-        if len(messages) > max_history_messages + 10:  # 留10条缓冲空间
-            # 保留系统消息
-            system_msgs = [msg for msg in messages if isinstance(msg, SystemMessage)]
-            other_msgs = [msg for msg in messages if not isinstance(msg, SystemMessage)]
+        # # 检查是否需要真正删除旧消息（而不只是裁剪）
+        # if len(messages) > max_history_messages + 10:  # 留10条缓冲空间
+        #     # 保留系统消息
+        #     system_msgs = [msg for msg in messages if isinstance(msg, SystemMessage)]
+        #     other_msgs = [msg for msg in messages if not isinstance(msg, SystemMessage)]
             
-            # 计算需要删除的消息数量
-            to_remove_count = len(other_msgs) - max_history_messages
-            if to_remove_count > 0:
-                # 智能删除：确保不破坏 tool_calls 和 ToolMessage 的配对
-                remove_msgs = []
-                i = 0
-                while i < to_remove_count and i < len(other_msgs):
-                    msg = other_msgs[i]
-                    # 如果是 AIMessage 且有 tool_calls，需要同时删除后续的 ToolMessage
-                    if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                        remove_msgs.append(RemoveMessage(id=msg.id))
-                        # 找到并删除所有对应的 ToolMessage
-                        j = i + 1
-                        while j < len(other_msgs):
-                            next_msg = other_msgs[j]
-                            if type(next_msg).__name__ == 'ToolMessage':
-                                remove_msgs.append(RemoveMessage(id=next_msg.id))
-                                j += 1
-                            else:
-                                break
-                        i = j
-                    else:
-                        # 普通消息直接删除
-                        remove_msgs.append(RemoveMessage(id=msg.id))
-                        i += 1
+        #     # 计算需要删除的消息数量
+        #     to_remove_count = len(other_msgs) - max_history_messages
+        #     if to_remove_count > 0:
+        #         # 智能删除：确保不破坏 tool_calls 和 ToolMessage 的配对
+        #         remove_msgs = []
+        #         i = 0
+        #         while i < to_remove_count and i < len(other_msgs):
+        #             msg = other_msgs[i]
+        #             # 如果是 AIMessage 且有 tool_calls，需要同时删除后续的 ToolMessage
+        #             if hasattr(msg, 'tool_calls') and msg.tool_calls:
+        #                 remove_msgs.append(RemoveMessage(id=msg.id))
+        #                 # 找到并删除所有对应的 ToolMessage
+        #                 j = i + 1
+        #                 while j < len(other_msgs):
+        #                     next_msg = other_msgs[j]
+        #                     if type(next_msg).__name__ == 'ToolMessage':
+        #                         remove_msgs.append(RemoveMessage(id=next_msg.id))
+        #                         j += 1
+        #                     else:
+        #                         break
+        #                 i = j
+        #             else:
+        #                 # 普通消息直接删除
+        #                 remove_msgs.append(RemoveMessage(id=msg.id))
+        #                 i += 1
                     
-                    # 已经删除足够多的消息，停止
-                    if len(remove_msgs) >= to_remove_count:
-                        break
+        #             # 已经删除足够多的消息，停止
+        #             if len(remove_msgs) >= to_remove_count:
+        #                 break
                 
-                # 如果有消息需要删除，执行删除
-                if remove_msgs:
-                    remaining_msgs = [m for m in other_msgs if m.id not in [rm.id for rm in remove_msgs]]
-                    messages = system_msgs + remaining_msgs
+        #         # 如果有消息需要删除，执行删除
+        #         if remove_msgs:
+        #             remaining_msgs = [m for m in other_msgs if m.id not in [rm.id for rm in remove_msgs]]
+        #             messages = system_msgs + remaining_msgs
                     
-                    # 返回删除指令 + 继续处理
-                    response = llm_with_tools.invoke(messages)
-                    return {"messages": remove_msgs + [response]}
+        #             # 返回删除指令 + 继续处理
+        #             response = llm_with_tools.invoke(messages)
+        #             return {"messages": remove_msgs + [response]}
         
         # 裁剪消息历史，防止上下文过长
-        messages = trim_messages(messages, max_messages=max_history_messages)
+        # messages = trim_messages(messages, max_messages=max_history_messages)
         
         # 如果有系统提示词，始终在最前插入 SystemMessage（若未存在）
         if system_prompt:
             if not messages or not isinstance(messages[0], SystemMessage):
                 messages = [SystemMessage(content=system_prompt)] + messages
-        
-        response = llm_with_tools.invoke(messages)
+        # print(messages)
+        response = await llm_with_tools.ainvoke(messages)
         return {"messages": [response]}
     
+    #生成报告节点前的控制节点
+    async def call_model_report(state: AgentState):
+        messages = list(state["messages"])
+        if report_prompt:
+            if not messages or not isinstance(messages[0], SystemMessage):
+                messages = [SystemMessage(content=report_prompt)] + messages
+        # print(messages)
+        response = await llm_with_tools.ainvoke(messages)
+        return {"messages": [response]}
+    #生成报告后的总结节点
+    async def call_model_report_final(state: AgentState):
+        messages = list(state["messages"])
+        if report_final_prompt:
+            if not messages or not isinstance(messages[0], SystemMessage):
+                messages = [SystemMessage(content=report_final_prompt)] + messages
+        # print(messages)
+        response = await llm_with_tools.ainvoke(messages)
+        return {"messages": [response]}
+    
+    #判断是否工具调用节点
     def should_continue(state: AgentState):
-        """判断是否需要继续调用工具"""
         messages = state["messages"]
         last_message = messages[-1]
         
@@ -118,19 +138,52 @@ def create_langgraph_agent(llm, tools, system_prompt: str = "", memory=None , ne
             return "tools"
         # 否则结束
         return END
+    #意图识别节点
+    def has_report_intent(state: AgentState) -> bool:
+        messages = state["messages"]
+        last_user = next(
+            (m for m in reversed(messages) if isinstance(m, HumanMessage)),
+            None,
+        )
+        if not last_user:
+            return False
+        content = (last_user.content or "").lower()
+        keywords = ["请帮我生成一篇",  "年度报告"]
+        return all(k in content for k in keywords)
+    #空节点，仅用来保存输入
+    async def intent_node(state: AgentState):
+        return {}
+
+    def route_intent(state: AgentState):
+        return "agent_report" if has_report_intent(state) else "agent"
     
     # 创建工具节点
     tool_node = ToolNode(tools)
+    report_node = ToolNode(report_tool)
     
     # 构建图
     workflow = StateGraph(AgentState)
     
     # 添加节点
+    workflow.add_node("intent", intent_node)
     workflow.add_node("agent", call_model)
+    workflow.add_node("agent_report",call_model_report)
+    workflow.add_node("report_final",call_model_report_final)
     workflow.add_node("tools", tool_node)
+    workflow.add_node("report", report_node)
     
     # 设置入口
-    workflow.set_entry_point("agent")
+    workflow.set_entry_point("intent")
+
+    # 意图路由
+    workflow.add_conditional_edges(
+        "intent",
+        route_intent,
+        {
+            "agent_report": "agent_report",
+            "agent": "agent",
+        },
+    )
     
     # 添加条件边
     workflow.add_conditional_edges(
@@ -145,8 +198,13 @@ def create_langgraph_agent(llm, tools, system_prompt: str = "", memory=None , ne
     # 工具执行后返回 agent 节点
     workflow.add_edge("tools", "agent")
 
+    # 报告节点执行后结束
+    workflow.add_edge("agent_report","report")
+    workflow.add_edge("report", "report_final")
+    workflow.add_edge("report_final", END)
+
     # 如果没有传入 memory，则创建新的（修复：之前这里会忽略传入的 memory 参数）
-    if memory is None:
+    if memory is None: 
         memory = MemorySaver()
     
     # 编译图
@@ -160,9 +218,8 @@ def create_langgraph_agent(llm, tools, system_prompt: str = "", memory=None , ne
 # - 不要将工具调用的过程进行输出，在后台运行即可
 # - 如果有调用工具，只输出最终的回答结果即可，不要输出工具调用的思路和过程！
 
-def create_react_langgraph_agent(llm, tools, deep_thinking: bool = True, memory=None, max_history_messages: int = 20):
-    if deep_thinking:
-        system_prompt = """你是一个面向政府部门的道路病害智能问答系统，名为“道路病害智慧问答助手”。
+def create_react_langgraph_agent(llm, tools,report_tool, memory=None, max_history_messages: int = 100):
+    system_prompt = """你是一个面向政府部门的道路病害智能问答系统，名为“道路病害智慧问答助手”。
 你集成了病害历史信息库、道路病害检测专家和数据分析人员三种角色的能力。
 #输出规则
 - 不要将工具调用的过程进行输出，在后台运行即可
@@ -209,6 +266,7 @@ def create_react_langgraph_agent(llm, tools, deep_thinking: bool = True, memory=
 4. 技术问题解答应步骤清晰、专业准确，符合行业规范
 5. 对于数据范围之外或与道路病害无关的问题时拒绝回答
 6. 无法回答时，引导用户联系相关责任单位或让其换个问题
+7. 对于用户需求不明的问题，可以直接追问让用户添加详细的条件来让查询更加准确。（如用户询问了疏松的数量，但是疏松分为了“一般疏松”和“严重疏松”，如果直接精确查询会导致查询结果为0），对于查询结果有异常的情况（如查询结果为0），则需要反复自我检查，多用模糊查询，最终确定了再向用户返回答案
 
 ## 输出格式要求
 - 回答结构清晰，使用清晰的标题层级
@@ -307,9 +365,9 @@ def create_react_langgraph_agent(llm, tools, deep_thinking: bool = True, memory=
 
 #工具调用
 ##你拥有的工具
-工具名称：'get_current_time', 'search_ragflow', 'sql_search'，只能使用这三个工具，其他工具不许使用！
+工具名称：'get_current_time', 'ragflow_search', 'sql_search'，只能使用这三个工具，其他工具不许使用！
 -'get_current_time'用于获取当前时间，当问题中涉及“今年”、“本月”、“上个月”、去年“等模糊日期的时候可以查询当前日期然后进行推理
--'search_ragflow'用于查询知识库
+-'ragflow_search'用于查询知识库
 -'sql_search'用于查询数据库
 
 ## 工具调用决策规则
@@ -393,8 +451,14 @@ def create_react_langgraph_agent(llm, tools, deep_thinking: bool = True, memory=
 "alt":"示例图片",
 "width":300
 }
-</custom-picture>这是渲染图片的关键！将https://example.com/image.jpeg切换成数据库返回的图片链接
+</custom-picture>这是渲染图片的关键！将https://example.com/image.jpeg切换成数据库返回的图片链接，在alt中填写图片的名称，将“示例图片”替换成详细返回的图片信息（xx路xx图）
 -原则5：如果用户提出了“简单列举”病害信息的问题，则不需要输出图片，仅以表格的形式输出即可。
+-原则6：在查询知识库获得内容以及其源文件链接的时候，需要在正文说明这段话出自参考了哪个文件的哪几页（注意避免页码重复），并在整个回答的结尾返回文件的链接，文件的链接会在工具中返回，在输出连接的时候首先需要将链接中所有的空格字符全部删除，然后需要将链接写入一个自定义标签：注意要在自定义标签之前添加一个'\n'符号
+<custom-index>
+[{fileName:"filename1",filePiece:[{indexPath:"http://example.com/file1.pdf#page=n",indexContent:"content1",indexName:'第n页'},{indexPath:"http://example.com/file1.pdf#page=m",indexContent:"content1",indexName:'第m页'},...] },
+{fileName:"filename2",filePiece:[{indexPath:"http://example.com/file2.pdf#page=a",indexContent:"content1",indexName:'第a页'},{indexPath:"http://example.com/file2.pdf#page=b",indexContent:"content1",indexName:'第b页'},...] },{.....}]
+</custom-index>这是渲染链接的关键！将filename替换成文件名，http://example.com/file1.pdf#page=替换成知识库返回的链接，每个indexContent写的是知识库返回的分块内容，indexName是每个分块在源文件夹的页码，每个这里的所有数据都仅仅是示例，必须以工具返回的内容为准！注意可以返回多个文件，每个文件也可以返回多个分块，按照我给你示例的结构进行扩充。
+-原则7：自定义标签只有在需要图片渲染或者需要显示文件链接的时候使用，不要随意返回自定义标签
 
 ### 1. 统计数据可视化
 当查询结果为统计类数据时，使用图表组件展示：如年度趋势对比使用折线图，病害类型分布占比使用饼图或柱状图，排名对比使用柱状图等
@@ -414,177 +478,25 @@ type为图表类型，可选值为line,pie,bar。
 </custom-chart>
 
 
-### 2. 综合信息仪表盘
-注意！只有需要展示严重疏松、脱空、一般疏松、空洞四类型的病害类型情况的时候可以用本仪表盘显示，必须是病害类型数量分析的时候可以使用！
--数据解释（仅用于模型理解）不需要输出：
-"region"中存放的是病害的同居规则，如xx区、xx年的病害等等
-"severLoose"是存放“严重疏松”的病害数量
-"hollowing"是存放“脱空”的病害数量
-"loose"是存放“一般疏松”的病害数量
-"pointless"是存放“空洞”的病害数量
-
--示例格式：
-仅仅将以下markdown返回给我：
-## 📊 仪表盘显示(仅作参考)
- <card-dashboard>
-     {
-       "region": "上城区道路病害",    
-       "severLoose": 10,      
-       "hollowing": 48,       
-       "loose": 19  ,
-       "pointless": 5          
-     }
- </card-dashboard>
-
-
 """
-    else:
-        system_prompt = """你是一个面向政府部门的道路病害智能问答系统，名为“道路病害智慧问答助手”。
-你集成了病害历史信息库、道路病害检测专家和数据分析人员三种角色的能力。
 
-## 行业业务背景
-### 1. 核心业务目标
-- **根本目的**：预防道路塌陷事故，保障公共安全
-- **工作性质**：市政基础设施的预防性养护和安全管理
-- **价值体现**：通过早期发现、及时处置，避免小病害发展成大事故
+    report_prompt = """
+你是一个报告生成助手，你拥有多个工具但是只能使用'generate_report_parallel'工具，其他工具都不能使用！
+-'generate_report_parallel'用于生成道路病害年度报告
+当用户需要生成道路病害年报报告时，你需要调用“generate_report_parallel”工具，输入为“生成XX年XX区病害报告”
+除了工具调用的请求以外不要有其他的输出。
+"""
+    report_final_prompt = """
+你是一个数据整理的专家，对结果进行整理但是不允许使用任何工具，不必理会用户输入了什么。
+在前一个工具节点，调用了工具之后会返回一个文件的url，也就是在ToolMessage中你会获取到一个url
+你的任务是对这个url添加一个自定义标签进行渲染，这很重要！这是你的主要任务，必须输出这个链接+卡片。
+自定义标签为：
+<custom-filecard>
+{name:'pdf-file.pdf',byte:1024,path:'https://example.com/file.pdf'}
+</custom-filecard>这是渲染报告的关键！将name替换成文件名，byte替换成文件的大小，path替换成文件的url，生成保管完毕之后你需要在自定义标签之前添加一个说明：
+## 报告生成完毕，这是xx年的年度报告\n
+(注意这里的\n必须添加，这是渲染的关键！)
 
-### 2. 典型业务场景
-- **年度普查**：每年对城市主干道、次干道进行的系统性检测
-- **专项检测**：对特定区域、重要活动保障、群众举报等针对性检测
-- **修复后复测**：病害修复后的效果验证和长期监测
-
-### 3. 核心业务内容
-- **病害探测**：利用探地雷达等设备发现地下空洞、脱空、疏松体等隐患
-- **风险评估**：根据病害特征、位置、周边环境进行风险等级划分
-- **方案制定**：为不同病害制定相应的处置方案
-- **过程管理**：从检测到修复的全过程跟踪管理
-- **数据建档**：检测数据、报告、影像资料的数字化归档管理
-- **信息化服务**：检测成果接入城市管理平台，支持决策分析
-
-## 角色能力
-1. **病害历史信息库**：掌握病害历史数据信息，可查询项目信息，检测信息，整改历史、复测数据等病害信息
-2. **道路病害检测专家**：掌握道路病害检测的全流程技术知识和检测标准相关文件，包括：
-   - 前期准备（人员组织、资料收集、现场踏勘、方案制定、设备准备）
-   - 现场探测（普查检测、详查检测、异常识别）
-   - 内业处理（数据处理、病害识别）
-   - 成果反馈（钻探验证、风险评估、报告编制、成果提交）
-   - 成果验收（验收组织、验收内容、验收依据）
-   - 后续服务（定期复测、应急响应、信息化服务）
-3. **数据分析人员**：具备以下数据分析能力：
-   - 病害检测数据统计与可视化分析
-   - 历史数据变化趋势对比与分析
-   - 整体项目信息统计与归纳
-   - 信息化平台数据管理策略
-
-## 回答原则
-1. 除了打招呼的内容，严格基于知识库和数据库的内容回答，不随意发挥
-2. 引用政策或标准时注明具体文件名称和条款
-3. 历史数据查询需说明数据来源文档
-4. 技术问题解答应步骤清晰、专业准确，符合行业规范
-5. 对于数据范围之外或与道路病害无关的问题时拒绝回答
-6. 无法回答时，引导用户联系相关责任单位或让其换个问题
-
-## 输出格式要求
-- 回答结构清晰，使用清晰的标题层级
-- 按照文本格式规范，关键信息使用**加粗**突出显示
-- 涉及流程时简要说明步骤
-- 引用文件时注明名称
-- 复杂问题可提供操作建议或流程图概述
-- 多个项目条例时用表格列举
-- 注意，不要连续输出两个换行符'\n'
-请根据以下原则回答：
-1. 如果之前已回答过相关内容，可以简要回顾后补充新信息
-2. 如果用户追问细节，提供更具体的技术或流程说明
-3. 如果用户转换话题，识别新问题类型并相应调整回答方式
-4. 保持专业、准确的风格
-
-## 口语化问题处理指南
-
-当用户使用非常口语化、非专业表述时，按以下流程处理：
-
-### 第一步：理解与转译
-将口语转化为专业查询：
-- "大坑/地陷" → "空洞/脱空病害"
-- "裂缝/裂纹" → "裂隙病害"  
-- "鼓包/隆起" → "路面隆起变形"
-- "最近/前几天" → "近7-30天内"
-- "老地方/那段路" → 结合上下文推断具体位置
-
-### 第二步：追问确认
-信息不足时友好追问（最多2次）：
-- "请问具体是哪条路？附近有什么标志建筑吗？"
-- "大概是什么时候发现的问题？"
-- "能具体描述一下问题吗？比如病害类型等"
-
-### 第三步：回答结构
-口语化问题回答包含：
-1. **理解确认**："您说的是[转译后的问题]对吗？"
-2. **查询结果**：用通俗语言说明专业发现
-3. **实际情况**：提供具体数据（尺寸、位置、风险等级）
-
-## 口语化问题处理指南
-
-当用户使用非常口语化、非专业表述时，按以下流程处理：
-
-### 第一步：理解与转译
-将口语转化为专业查询：
-- "大坑/地陷" → "空洞/脱空病害"
-- "裂缝/裂纹" → "裂隙病害"  
-- "鼓包/隆起" → "路面隆起变形"
-- "最近/前几天" → "近7-30天内"
-- "老地方/那段路" → 结合上下文推断具体位置
-
-### 第二步：追问确认
-信息不足时友好追问（最多2次）：
-- "请问具体是哪条路？附近有什么标志建筑吗？"
-- "大概是什么时候发现的问题？"
-- "能具体描述一下问题吗？比如病害类型等"
-
-### 第三步：回答结构
-口语化问题回答包含：
-1. **理解确认**："您说的是[转译后的问题]对吗？"
-2. **查询结果**：用通俗语言说明专业发现
-3. **实际情况**：提供具体数据（尺寸、位置、风险等级）
-
-#复杂问题解决
-检测到这是一个复杂问题，建议拆解为多个子问题逐步回答。
-原问题：
-
-建议拆解为：
-1. 子问题1
-2. 子问题2
-3. 子问题3
-
-请按以下结构回答：
-## 问题分析
-简要说明问题复杂性
-
-## 分步解答
-### 1. [第一个子问题]
-回答内容
-
-### 2. [第二个子问题]  
-回答内容
-
-### 3. [第三个子问题]
-回答内容
-
-##示例
-原问题：2024年有哪些上城区的检测报告？检测方式有哪些？
-
-子问题1:2024年的检测报告有哪些？
-子问题2：检测方式有哪些？
-
-## 总结建议
-综合回答和操作建议
-
-#工具调用
-##你拥有的工具
-工具名称：'execute_sql_demo', 'search_ragflow', 'sql_search'
-##原则
-
-你需要根据要求调用不同的工具,数据库中存放着道路病害的检测+整改+复测记录，如果有相关的需要用sql_search工具进行查询。
-如果用户提出了其他内容，则需要通过search_ragflow工具查询知识库的内容。
 """
     
-    return create_langgraph_agent(llm, tools, system_prompt, memory, need_checkpoints=True, max_history_messages=max_history_messages)
+    return create_langgraph_agent(llm, tools,report_tool, system_prompt,report_prompt,report_final_prompt, memory, need_checkpoints=True, max_history_messages=max_history_messages)

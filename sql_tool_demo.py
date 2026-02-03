@@ -7,10 +7,12 @@ from langchain.tools import tool
 from local_llm import llm
 import asyncio
 import threading
+import os
+mcpurl = os.getenv("MCP_URL", "http://127.0.0.1:8080/")
 
 _MCP_CONNECTIONS = {
     "local_mcp": {
-        "url": "http://127.0.0.1:8080/",
+        "url": mcpurl,
         "transport": "sse",
     }
 }
@@ -18,7 +20,7 @@ _MCP_CONNECTIONS = {
 _cached_mcp_tools = None
 _cached_sql_agent = None
 
-front_url = 'http://172.20.10.3:8081/'
+front_url = os.getenv("front_url_image", 'http://192.168.46.210:8082/')
 
 def _run_async_sync(coro_func, *args, **kwargs):
     """在同步上下文中安全运行协程。
@@ -101,7 +103,7 @@ prompt_sql_query = PromptTemplate.from_template(
 {tools}，{tool_names}
 注意，你只能使用名为'execute_sql_demo'的工具，别的工具都不许调用
 注意，不要连续输出两个换行符'\n'
-必须严格按照以下格式回答：
+必须严格按照以下格式调用工具：
 
 Question: 需要回答的问题
 Thought: 我需要做什么
@@ -110,14 +112,16 @@ Action Input: {{}}
 Observation: 工具返回的结果
 Thought: 我现在知道最终答案了
 Final Answer: 最终答案
+
 # 你是一个专业的 Text-to-SQL 转换专家，专注于将用户提问的有关道路病害的问题转成sql语句输入到工具中并返回结果
 ## 角色定位
 你是专注于道路病害数据分析业务的 Text-to-SQL 转换专家，精通业务逻辑与多表关联规则，能基于用户自然语言查询，生成无笛卡尔积、贴合实际业务的 SQL 语句，确保语法规范、数据准确且符合业务场景需求。
 ## 任务
-1. 根据【用户问题】、提供的表结构及防笛卡尔积规则，生成语法正确、无笛卡尔积的 SQL 语句
-2. 生成的 SQL 需严格遵循关联逻辑，确保多表查询时数据准确性
-3. 将生成的sql语句作为工具execute_sql_demo的输入并将工具返回结果完整地输出
-4. 如果用户查询了图片相关的数据，返回的内容会是一个jpeg结尾的半成品链接，比如：、xx区复测xx/xx-xx-x_xx照片.jpeg,我需要你拼接一个前缀:{front_url},返回给我的结果为：{front_url}xx区复测xx/xx-xx-x_xx照片.jpeg
+1. 对于【用户问题】需要进行整理，你要注意用户可能会使用偏口语化的问题，比如数据库中可能存放的是“一般疏松”或者“严重疏松”，但是用户会直接问疏松，这样的话就需要利用模糊查询而不是精确查询。你需要确保数据查询的准确，所以多用模糊查询。
+2. 根据整理后的【用户问题】，思考是否需要使用模糊查询、提供的表结构及防笛卡尔积规则，生成语法正确、无笛卡尔积的 SQL 语句
+3. 生成的 SQL 需严格遵循关联逻辑，确保多表查询时数据准确性
+4. 将生成的sql语句作为工具execute_sql_demo的输入并将工具返回结果完整地输出
+5. 如果用户查询了图片相关的数据，返回的内容会是一个jpeg结尾的半成品链接，比如：、xx区复测xx/xx-xx-x_xx照片.jpeg,我需要你拼接一个前缀:{front_url},返回给我的结果为：{front_url}xx区复测xx/xx-xx-x_xx照片.jpeg
 
 ## 业务场景详解
 ### 业务主体
@@ -211,7 +215,7 @@ Final Answer: 最终答案
 公司
 道路名称
 起止点描述 （道路的起止点）
-道路等级
+道路等级 （主干路，次干路，支路等）
 道路属性
 路长 （以km为单位）
 检测时间
@@ -257,7 +261,8 @@ WHERE t1.塌陷发生可能性 = '高';
 ## 注意事项
 1. 若用户问题仅涉及单表查询，直接生成单表 SQL，无需强制关联多表
 2. 若关联字段存在 NULL 值，需评估是否使用 LEFT JOIN，并在注释中说明可能的匹配情况
-3 避免过度关联无关表，仅保留用户问题所需的表和字段，提升查询性能
+3. 避免过度关联无关表，仅保留用户问题所需的表和字段，提升查询性能
+4. 如果有遇到“多少”、“数量”等需要统计的问题，sql语句中多用COUNT公式，SELECT COUNT(*) FROM XX WHERE XXX.
 
 
 现在开始：
@@ -287,7 +292,14 @@ async def _get_or_create_sql_agent():
 
 @tool(
     "sql_search",
-    description="这是一个自己生成sql语句并查询的工具，只需要给出所需查询的问题即可，工具会自动生成sql语句并进行查询",
+    description="""这是一个自己生成sql语句并查询的工具，只需要给出所需查询的问题即可，工具会自动生成sql语句并进行查询,
+    自己生成sql语句并查询的工具
+    Args:
+        input: 所需查询的问题
+    
+    Returns:
+        查询结果
+""",
 )
 async def sql_agent_tool(input: str) -> str:
     agent = await _get_or_create_sql_agent()

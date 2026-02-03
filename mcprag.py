@@ -125,7 +125,7 @@ def get_current_time() -> str:
     return f"当前时间: {current_time.strftime('%Y-%m-%d %H:%M:%S')}"
 
 @mcp.tool()
-def search_ragflow(query: str, top_k: int = 4) -> str:
+def search_ragflow(query: str, top_k: int = 8) -> str:
     """
     在 RAGFlow 知识库中检索相关文档
     
@@ -149,7 +149,7 @@ def search_ragflow(query: str, top_k: int = 4) -> str:
         llm = ChatZhipuAI(
             model="glm-4-flash",
             temperature=0,
-            zhipuai_api_key="62c9130e480e4438ab88ff475ac3b24b.cCXcVAkQePGXY520"
+            zhipuai_api_key="48552c97d20f4eff96a683eff58834df.Eomco0kx1bKJ9LwS"
         )
         
         # Query 改写
@@ -170,6 +170,7 @@ def search_ragflow(query: str, top_k: int = 4) -> str:
         # 格式化结果
         results = []
         for doc in docs:
+            list = doc.metadata.get("positions", [])
             results.append({
                 "content": doc.page_content,
                 "metadata": {
@@ -180,7 +181,8 @@ def search_ragflow(query: str, top_k: int = 4) -> str:
                     "document_id": doc.metadata.get("document_id", ""),
                     "chunk_id": doc.metadata.get("chunk_id", ""),
                     "doc_type": doc.metadata.get("doc_type", ""),
-                    "positions": doc.metadata.get("positions", [])
+                    "positions": list,
+                    "page": list[0][0]
                 }
             })
         
